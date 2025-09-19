@@ -21,27 +21,20 @@ except Exception:
     TF_AVAILABLE = False
 
 # ---------------- CONFIG ----------------
-WIDTH, HEIGHT = 1000, 650
+WIDTH, HEIGHT = 1200, 680
 FPS = 60
 
 IMAGE_PATH = "images"
 SIGNAL_PATH = os.path.join(IMAGE_PATH, "Signals")
 DIRECTIONS = ["Up", "Down", "Left", "Right"]
 
-# Improved lane positions based on intersection layout
-LANE_POS = {
-    "Down": [WIDTH // 2 - 35, WIDTH // 2 - 70],  # Right lanes for Down traffic
-    "Up": [WIDTH // 2 + 35, WIDTH // 2 + 70],  # Left lanes for Up traffic
-    "Right": [HEIGHT // 2 - 35, HEIGHT // 2 - 70],  # Bottom lanes for Right traffic
-    "Left": [HEIGHT // 2 + 35, HEIGHT // 2 + 70],  # Top lanes for Left traffic
-}
 
 # Spawn positions (back to off-screen but close)
 SPAWN_POS = {
     "Down": {"x_lanes": [WIDTH // 2 - 35, WIDTH // 2 - 70], "y": -80},
-    "Up": {"x_lanes": [WIDTH // 2 + 35, WIDTH // 2 + 70], "y": HEIGHT + 80},
-    "Right": {"x": -80, "y_lanes": [HEIGHT // 2 - 35, HEIGHT // 2 - 70]},
-    "Left": {"x": WIDTH + 80, "y_lanes": [HEIGHT // 2 + 35, HEIGHT // 2 + 70]},
+    "Up": {"x_lanes": [WIDTH // 2 + 30, WIDTH // 2 + 60], "y": 680},
+    "Right": {"x": -80, "y_lanes": [HEIGHT // 2 - 30, HEIGHT // 2 - 65]},
+    "Left": {"x": 1180, "y_lanes": [HEIGHT // 2 + 0, HEIGHT // 2 + 30]},
 }
 
 # Stop lines before intersection
@@ -54,10 +47,10 @@ STOP_LINES = {
 
 # Traffic light positions
 LIGHT_POSITIONS = {
-    "NS_top": (WIDTH // 2 - 100, HEIGHT // 2 - 180),
-    "NS_bottom": (WIDTH // 2 + 60, HEIGHT // 2 + 120),
-    "EW_left": (WIDTH // 2 - 180, HEIGHT // 2 + 60),
-    "EW_right": (WIDTH // 2 + 120, HEIGHT // 2 - 100)
+    "NS_top": (WIDTH // 2 - 200, HEIGHT // 2 - 300),
+    "NS_bottom": (WIDTH // 2 + 100, HEIGHT // 2 + 190),
+    "EW_left": (WIDTH // 2 - 400, HEIGHT // 2 + 60),
+    "EW_right": (WIDTH // 2 + 400, HEIGHT // 2 - 190)
 }
 
 # RL action set and timing
@@ -118,9 +111,9 @@ def load_assets():
                         img = pg.image.load(full).convert_alpha()
                         # Scale vehicles appropriately based on direction
                         if d in ["Up", "Down"]:
-                            img = pg.transform.smoothscale(img, (40, 60))
+                            img = pg.transform.smoothscale(img, (25, 45))
                         else:  # Left, Right
-                            img = pg.transform.smoothscale(img, (60, 40))
+                            img = pg.transform.smoothscale(img, (45, 25))
                         assets["vehicles"][d].append(img)
                         print(f"Loaded vehicle image: {fname} for direction {d}")
                     except Exception as e:
@@ -323,17 +316,13 @@ class Vehicle:
         approaching_intersection = False
 
         if self.direction == "Down":
-            approaching_intersection = (self.rect.bottom >= self.stop_line - 50 and
-                                        self.rect.bottom <= self.stop_line + 20)
+            approaching_intersection = (self.rect.bottom >= self.stop_line - 50 and self.rect.bottom <= self.stop_line + 20)
         elif self.direction == "Up":
-            approaching_intersection = (self.rect.top <= self.stop_line + 50 and
-                                        self.rect.top >= self.stop_line - 20)
+            approaching_intersection = (self.rect.top <= self.stop_line + 50 and self.rect.top >= self.stop_line - 20)
         elif self.direction == "Right":
-            approaching_intersection = (self.rect.right >= self.stop_line - 50 and
-                                        self.rect.right <= self.stop_line + 20)
+            approaching_intersection = (self.rect.right >= self.stop_line - 50 and self.rect.right <= self.stop_line + 20)
         elif self.direction == "Left":
-            approaching_intersection = (self.rect.left <= self.stop_line + 50 and
-                                        self.rect.left >= self.stop_line - 20)
+            approaching_intersection = (self.rect.left <= self.stop_line + 50 and self.rect.left >= self.stop_line - 20)
 
         if not approaching_intersection:
             return False
@@ -822,11 +811,6 @@ def run_simulation(mode="play", episodes=50, display=True, use_lstm=False):
                 for i, vehicle in enumerate(vehicles):
                     vehicle.draw(screen)
                     vehicles_drawn += 1
-
-                    # Optional: Draw small debug info (can be removed later)
-                    if len(vehicles) < 10:  # Only show debug for few vehicles
-                        debug_text = small_font.render(f"{vehicle.direction} #{i}", True, (255, 255, 0))
-                        screen.blit(debug_text, (vehicle.rect.x, vehicle.rect.y - 15))
 
                 # Draw UI
                 ns_waiting, ew_waiting = controller.count_waiting_vehicles(vehicles)
