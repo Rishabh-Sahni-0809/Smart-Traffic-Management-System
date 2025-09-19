@@ -21,7 +21,7 @@ except Exception:
     TF_AVAILABLE = False
 
 # ---------------- CONFIG ----------------
-WIDTH, HEIGHT = 1000, 600
+WIDTH, HEIGHT = 1000, 650
 FPS = 60
 
 IMAGE_PATH = "images"
@@ -318,7 +318,27 @@ class Vehicle:
             self.rect.centery = spawn["y_lanes"][self.lane]
 
     def should_stop_for_light(self, light_state):
-        """Check if vehicle should stop for traffic light"""
+        """Check if vehicle should stop for traffic light based on proximity to intersection"""
+        # Only stop if we're approaching the intersection and haven't crossed the stop line
+        approaching_intersection = False
+
+        if self.direction == "Down":
+            approaching_intersection = (self.rect.bottom >= self.stop_line - 50 and
+                                        self.rect.bottom <= self.stop_line + 20)
+        elif self.direction == "Up":
+            approaching_intersection = (self.rect.top <= self.stop_line + 50 and
+                                        self.rect.top >= self.stop_line - 20)
+        elif self.direction == "Right":
+            approaching_intersection = (self.rect.right >= self.stop_line - 50 and
+                                        self.rect.right <= self.stop_line + 20)
+        elif self.direction == "Left":
+            approaching_intersection = (self.rect.left <= self.stop_line + 50 and
+                                        self.rect.left >= self.stop_line - 20)
+
+        if not approaching_intersection:
+            return False
+
+        # Stop logic based on light state
         if light_state == "NS_GREEN":
             return self.direction in ["Left", "Right"]  # EW traffic must stop
         elif light_state == "EW_GREEN":
@@ -326,7 +346,7 @@ class Vehicle:
         elif light_state in ["NS_YELLOW", "EW_YELLOW", "ALL_RED"]:
             return True  # Everyone stops for yellow and all red
         else:
-            return False  # Default: don't stop
+            return False
 
     def check_collision_ahead(self, vehicles):
         """Check for vehicles ahead in the same lane"""
@@ -346,13 +366,11 @@ class Vehicle:
 
             # Check if other vehicle is ahead and close
             if self.direction == "Down":
-                if (other.rect.centery > self.rect.centery and
-                        other.rect.top - self.rect.bottom < safe_distance and
-                        other.rect.top - self.rect.bottom > -20):  # Allow some overlap
+                if (other.rect.centery > self.rect.centery and other.rect.top - self.rect.bottom < safe_distance and other.rect.top - self.rect.bottom > -20):  # Allow some overlap
                     return True
             elif self.direction == "Up":
                 if (other.rect.centery < self.rect.centery and
-                        self.rect.top - other.rect.bottom < safe_distance and
+                    self.rect.top - other.rect.bottom < safe_distance and
                         self.rect.top - other.rect.bottom > -20):
                     return True
             elif self.direction == "Right":
@@ -448,10 +466,20 @@ class Vehicle:
 # ---------------- Traffic Controller ----------------
 class TrafficController:
     def __init__(self, use_lstm=False):
-        self.current_phase = "ALL_RED"
-        self.phase_timer = 0
+        self.current_phase = "NS_GREEN"  # Start with green instead of all red
+        self.phase_timer = 5.0  # Initial green duration
         self.yellow_timer = 0
         self.all_red_timer = 0
+
+        # Minimum and maximum phase durations to prevent starvation
+        self.min_green_time = 5.0  # Minimum green time
+        self.max_green_time = 15.0  # Maximum green time
+        self.max_wait_time = 20.0  # Maximum time any direction should wait
+
+        # Track how long each direction has been waiting
+        self.ns_wait_start_time = 0
+        self.ew_wait_start_time = 0
+        self.last_phase_change = 0
 
         # Data collection
         self.traffic_history = deque(maxlen=1000)
@@ -505,9 +533,35 @@ class TrafficController:
         return (ns_state, ew_state)
 
     def count_waiting_vehicles(self, vehicles):
-        """Count vehicles waiting at each direction"""
-        ns_waiting = sum(1 for v in vehicles if v.direction in ["Up", "Down"] and v.stopped)
-        ew_waiting = sum(1 for v in vehicles if v.direction in ["Left", "Right"] and v.stopped)
+        """Count vehicles waiting at each direction - only count those actually stopped near intersection"""
+        ns_waiting = 0
+        ew_waiting = 0
+
+        for v in vehicles:
+            if not v.stopped:
+                continue
+
+            # Only count vehicles that are close to the intersection
+            near_intersection = False
+            if v.direction == "Down":
+                near_intersection = (v.rect.bottom >= STOP_LINES["Down"] - 100 and
+                                     v.rect.bottom <= STOP_LINES["Down"] + 50)
+            elif v.direction == "Up":
+                near_intersection = (v.rect.top <= STOP_LINES["Up"] + 100 and
+                                     v.rect.top >= STOP_LINES["Up"] - 50)
+            elif v.direction == "Right":
+                near_intersection = (v.rect.right >= STOP_LINES["Right"] - 100 and
+                                     v.rect.right <= STOP_LINES["Right"] + 50)
+            elif v.direction == "Left":
+                near_intersection = (v.rect.left <= STOP_LINES["Left"] + 100 and
+                                     v.rect.left >= STOP_LINES["Left"] - 50)
+
+            if near_intersection:
+                if v.direction in ["Up", "Down"]:
+                    ns_waiting += 1
+                else:
+                    ew_waiting += 1
+
         return ns_waiting, ew_waiting
 
     def calculate_reward(self, vehicles):
@@ -519,74 +573,123 @@ class TrafficController:
         reward = -total_waiting - (total_waiting_time * 0.1)
         return reward
 
+    def should_switch_phase(self, ns_waiting, ew_waiting, current_time):
+        """Smart logic to determine if phase should switch"""
+        current_green_time = current_time - self.last_phase_change
+
+        # Force switch if maximum green time exceeded
+        if current_green_time >= self.max_green_time:
+            print(f"Forced phase switch: Max green time ({self.max_green_time}s) exceeded")
+            return True
+
+        # Force switch if other direction has been waiting too long
+        if self.current_phase == "NS_GREEN":
+            if self.ew_wait_start_time > 0 and (current_time - self.ew_wait_start_time) >= self.max_wait_time:
+                print(
+                    f"Forced phase switch: EW has been waiting too long ({current_time - self.ew_wait_start_time:.1f}s)")
+                return True
+        elif self.current_phase == "EW_GREEN":
+            if self.ns_wait_start_time > 0 and (current_time - self.ns_wait_start_time) >= self.max_wait_time:
+                print(
+                    f"Forced phase switch: NS has been waiting too long ({current_time - self.ns_wait_start_time:.1f}s)")
+                return True
+
+        # Don't switch too early (minimum green time)
+        if current_green_time < self.min_green_time:
+            return False
+
+        # Smart switching based on traffic density
+        if self.current_phase == "NS_GREEN":
+            # Switch if EW has significantly more waiting vehicles
+            if ew_waiting > ns_waiting + 3 and ew_waiting > 2:
+                print(f"Smart switch: EW has more waiting vehicles ({ew_waiting} vs {ns_waiting})")
+                return True
+            # Switch if NS has very few vehicles and EW has some waiting
+            if ns_waiting <= 1 and ew_waiting >= 2:
+                print(f"Smart switch: NS has few vehicles ({ns_waiting}), EW waiting ({ew_waiting})")
+                return True
+        else:  # EW_GREEN
+            # Switch if NS has significantly more waiting vehicles
+            if ns_waiting > ew_waiting + 3 and ns_waiting > 2:
+                print(f"Smart switch: NS has more waiting vehicles ({ns_waiting} vs {ew_waiting})")
+                return True
+            # Switch if EW has very few vehicles and NS has some waiting
+            if ew_waiting <= 1 and ns_waiting >= 2:
+                print(f"Smart switch: EW has few vehicles ({ew_waiting}), NS waiting ({ns_waiting})")
+                return True
+
+        return False
+
     def update(self, vehicles, dt, mode="play"):
-        """Update traffic controller state"""
+        """Update traffic controller with smart phase management"""
+        current_time = time.time()
         ns_waiting, ew_waiting = self.count_waiting_vehicles(vehicles)
         total_waiting = ns_waiting + ew_waiting
+
+        # Track when each direction starts waiting
+        if self.current_phase == "NS_GREEN" and ew_waiting > 0 and self.ew_wait_start_time == 0:
+            self.ew_wait_start_time = current_time
+        elif self.current_phase == "EW_GREEN" and ns_waiting > 0 and self.ns_wait_start_time == 0:
+            self.ns_wait_start_time = current_time
+
+        # Reset wait timers when direction gets green
+        if self.current_phase == "NS_GREEN":
+            self.ns_wait_start_time = 0
+        elif self.current_phase == "EW_GREEN":
+            self.ew_wait_start_time = 0
 
         # Record data for LSTM
         self.waiting_history.append(total_waiting)
 
-        # Get LSTM prediction if available
-        predicted_waiting = 0
-        if self.use_lstm and self.lstm_predictor and len(self.waiting_history) >= 10:
-            predicted_waiting = self.lstm_predictor.predict_next(list(self.waiting_history))
-
         # Handle phase transitions
         if self.phase_timer <= 0:
-            if self.current_phase == "ALL_RED":
-                # Time to choose new action
-                state = self.get_state(ns_waiting, ew_waiting, predicted_waiting)
-                action_idx = self.q_agent.choose_action(state)
-                action = ACTIONS[action_idx]
-
-                # Store for Q-learning update
-                self.last_state = state
-                self.last_action = action_idx
-                self.accumulated_reward = 0
-
-                # Execute action
-                if action.startswith("NS"):
-                    self.current_phase = "NS_GREEN"
-                    duration = GREEN_DURATIONS["long"] if "long" in action else GREEN_DURATIONS["short"]
+            if self.current_phase in ["NS_GREEN", "EW_GREEN"]:
+                # Check if we should switch or continue current phase
+                if self.should_switch_phase(ns_waiting, ew_waiting, current_time):
+                    # Switch to yellow
+                    if self.current_phase == "NS_GREEN":
+                        self.current_phase = "NS_YELLOW"
+                        print("Switching NS to Yellow")
+                    else:
+                        self.current_phase = "EW_YELLOW"
+                        print("Switching EW to Yellow")
+                    self.phase_timer = YELLOW_DURATION
                 else:
-                    self.current_phase = "EW_GREEN"
-                    duration = GREEN_DURATIONS["long"] if "long" in action else GREEN_DURATIONS["short"]
-
-                self.phase_timer = duration
-
-            elif self.current_phase in ["NS_GREEN", "EW_GREEN"]:
-                # Switch to yellow
-                if self.current_phase == "NS_GREEN":
-                    self.current_phase = "NS_YELLOW"
-                else:
-                    self.current_phase = "EW_YELLOW"
-                self.phase_timer = YELLOW_DURATION
+                    # Extend current green phase
+                    extension_time = min(3.0, self.max_green_time - (current_time - self.last_phase_change))
+                    self.phase_timer = extension_time
+                    print(f"Extending {self.current_phase} by {extension_time:.1f}s")
 
             elif self.current_phase in ["NS_YELLOW", "EW_YELLOW"]:
-                # Switch to all red, then prepare for Q-learning update
+                # Switch to all red briefly
                 self.current_phase = "ALL_RED"
                 self.phase_timer = ALL_RED_DURATION
+                print("Switching to All Red")
 
-                # Q-learning update
-                if mode == "train":
-                    next_state = self.get_state(ns_waiting, ew_waiting, predicted_waiting)
-                    reward = self.calculate_reward(vehicles)
-                    self.accumulated_reward += reward
+            elif self.current_phase == "ALL_RED":
+                # Decide next green phase based on traffic
+                self.last_phase_change = current_time
 
-                    self.q_agent.update_q_value(
-                        self.last_state,
-                        self.last_action,
-                        self.accumulated_reward,
-                        next_state
-                    )
+                if ns_waiting > ew_waiting:
+                    self.current_phase = "NS_GREEN"
+                    print(f"Switching to NS Green (NS:{ns_waiting} > EW:{ew_waiting})")
+                elif ew_waiting > ns_waiting:
+                    self.current_phase = "EW_GREEN"
+                    print(f"Switching to EW Green (EW:{ew_waiting} > NS:{ns_waiting})")
+                else:
+                    # Equal traffic, alternate or use other logic
+                    if hasattr(self, '_last_green') and self._last_green == "NS_GREEN":
+                        self.current_phase = "EW_GREEN"
+                        print("Equal traffic - alternating to EW Green")
+                    else:
+                        self.current_phase = "NS_GREEN"
+                        print("Equal traffic - alternating to NS Green")
 
-        # Update timers
+                self._last_green = self.current_phase
+                self.phase_timer = self.min_green_time
+
+        # Update timer
         self.phase_timer -= dt
-
-        # Accumulate reward for current action
-        if hasattr(self, 'accumulated_reward'):
-            self.accumulated_reward += self.calculate_reward(vehicles) * dt
 
     def get_light_color(self, direction_group):
         """Get the current light color for a direction group (NS or EW)"""
@@ -728,13 +831,15 @@ def run_simulation(mode="play", episodes=50, display=True, use_lstm=False):
                 # Draw UI
                 ns_waiting, ew_waiting = controller.count_waiting_vehicles(vehicles)
 
+                # Draw UI with more detailed information
                 ui_lines = [
                     f"Episode: {episode + 1}/{episodes}",
                     f"Phase: {controller.current_phase} ({controller.phase_timer:.1f}s)",
                     f"Vehicles: {len(vehicles)} (Drawn: {vehicles_drawn}) (Total spawned: {stats['total_vehicles']})",
                     f"Waiting - NS: {ns_waiting}, EW: {ew_waiting}",
                     f"Mode: {mode.upper()}",
-                    f"Epsilon: {controller.q_agent.eps:.3f}" if mode == "train" else "",
+                    f"NS Wait Time: {(time.time() - controller.ns_wait_start_time):.1f}s" if controller.ns_wait_start_time > 0 else "NS Wait Time: 0s",
+                    f"EW Wait Time: {(time.time() - controller.ew_wait_start_time):.1f}s" if controller.ew_wait_start_time > 0 else "EW Wait Time: 0s",
                     f"Spawn Timer: {spawn_timer:.1f}s"
                 ]
 
