@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Smart Traffic Management System Banner" width="800"/>
+  <img src="images/banner.png" alt="Smart Traffic Management System Banner" width="800"/>
 </p>
 
 
