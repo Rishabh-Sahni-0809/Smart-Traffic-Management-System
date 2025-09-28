@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://svg-banners.vercel.app/api?type=glitch&text1=🚦%20Smart%20Traffic%20Management%20System%20🚦&width=800&height=150" alt="Smart Traffic Management System Banner"/>
+</p>
+
 
 # 🚦 Smart Traffic Management System  
 
